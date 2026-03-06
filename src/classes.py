@@ -1,3 +1,18 @@
+import json
+import logging
+import os
+from datetime import datetime
+
+
+logging.basicConfig(
+    filename='shop.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    encoding='utf-8'
+)
+logger = logging.getLogger(__name__)
+
+
 class Product:
     def __init__(self, name, price, quantity, product_id):
         self.__name = name
@@ -6,6 +21,10 @@ class Product:
         self.product_id = product_id
         self.price = price
         self.quantity = quantity
+
+    @property
+    def name(self):
+        return self.__name
 
     @property
     def price(self):
@@ -33,6 +52,19 @@ class Product:
     def __str__(self):
         return f"{self.__name} ({self.product_id}): {self.__price} руб., в наличии: {self.__quantity}"
 
+    def to_dict(self):
+        return {
+            "type": "Product",
+            "name": self.__name,
+            "price": self.__price,
+            "quantity": self.__quantity,
+            "product_id": self.product_id
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(data["name"], data["price"], data["quantity"], data["product_id"])
+
 
 class Customer:
     def __init__(self, name, customer_id, email):
@@ -40,6 +72,10 @@ class Customer:
         self.customer_id = customer_id
         self.__email = None
         self.email = email
+
+    @property
+    def name(self):
+        return self.__name
 
     @property
     def email(self):
@@ -53,6 +89,17 @@ class Customer:
 
     def __str__(self):
         return f"{self.__name} ({self.customer_id}), email: {self.__email}"
+
+    def to_dict(self):
+        return {
+            "name": self.__name,
+            "customer_id": self.customer_id,
+            "email": self.__email
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(data["name"], data["customer_id"], data["email"])
 
 
 class Cart:
@@ -77,13 +124,17 @@ class Cart:
         else:
             self.items[product_id] = quantity
             self.__products[product_id] = product
+        logger.info(f"Добавлено в корзину: {product.name} x{quantity}")
 
     def remove_item(self, product_id):
         if product_id not in self.items:
             raise Exception(f"Товар {product_id} нет в корзине")
+        product = self.__products.get(product_id)
+        name = product.name if product else product_id
         del self.items[product_id]
         if product_id in self.__products:
             del self.__products[product_id]
+        logger.info(f"Удалено из корзины: {name}")
 
     def update_quantity(self, product_id, new_quantity):
         if product_id not in self.items:
@@ -92,6 +143,7 @@ class Cart:
         if self.__check_stock and product and not product.is_available(new_quantity):
             raise Exception(f"Недостаточно товара {product_id} на складе")
         self.items[product_id] = new_quantity
+        logger.info(f"Обновлено количество в корзине: {product.name} -> {new_quantity}")
 
     def get_total_price(self, product_catalog):
         total = 0
@@ -106,10 +158,10 @@ class Cart:
         self.__products = {}
 
     def __str__(self):
-        lines = [f"Корзина покупателя {self.customer._Customer__name}:"]
+        lines = [f"Корзина покупателя {self.customer.name}:"]
         for product_id, quantity in self.items.items():
             product = self.__products.get(product_id)
-            name = product._Product__name if product else product_id
+            name = product.name if product else product_id
             lines.append(f"  {name}: {quantity} шт.")
         return "\n".join(lines)
 
@@ -136,9 +188,19 @@ class Order:
             raise Exception(f"Нельзя перейти от статуса '{self.status}' к '{new_status}'")
 
         self.status = new_status
+        logger.info(f"Статус заказа {self.order_id} изменен на '{new_status}'")
 
     def __str__(self):
-        return f"Заказ {self.order_id}, покупатель {self.customer._Customer__name}, статус: {self.status}, сумма: {self.total_price} руб."
+        return f"Заказ {self.order_id}, покупатель {self.customer.name}, статус: {self.status}, сумма: {self.total_price} руб."
+
+    def to_dict(self):
+        return {
+            "order_id": self.order_id,
+            "customer_id": self.customer.customer_id,
+            "items": self.items,
+            "total_price": self.total_price,
+            "status": self.status
+        }
 
 
 class Shop:
@@ -151,9 +213,11 @@ class Shop:
 
     def add_product(self, product):
         self.products[product.product_id] = product
+        logger.info(f"Добавлен товар: {product.name}")
 
     def register_customer(self, customer):
         self.customers[customer.customer_id] = customer
+        logger.info(f"Зарегистрирован покупатель: {customer.name}")
 
     def get_cart(self, customer):
         if customer.customer_id not in self.carts:
@@ -184,13 +248,14 @@ class Shop:
 
         cart.clear()
         self.orders.append(order)
+        logger.info(f"Создан заказ {order.order_id} на сумму {total_price} руб.")
         return order
 
     def find_products_by_name(self, name):
         result = []
         search_term = name.lower()
         for product in self.products.values():
-            if search_term in product._Product__name.lower():
+            if search_term in product.name.lower():
                 result.append(product)
         return result
 
@@ -207,6 +272,52 @@ class Shop:
             return products_list[key]
         return self.products.get(key)
 
+    def save_to_json(self, filename):
+        data = {
+            "products": [p.to_dict() for p in self.products.values()],
+            "customers": [c.to_dict() for c in self.customers.values()],
+            "orders": [o.to_dict() for o in self.orders],
+            "order_counter": self.__order_counter
+        }
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info(f"Данные сохранены в {filename}")
+
+    def load_from_json(self, filename):
+        if not os.path.exists(filename):
+            logger.warning(f"Файл {filename} не найден")
+            return
+
+        with open(filename, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        self.products = {}
+        for p_data in data.get("products", []):
+            p_type = p_data.get("type", "Product")
+            if p_type == "DigitalProduct":
+                product = DigitalProduct.from_dict(p_data)
+            elif p_type == "DiscountedProduct":
+                product = DiscountedProduct.from_dict(p_data)
+            else:
+                product = Product.from_dict(p_data)
+            self.products[product.product_id] = product
+
+        self.customers = {}
+        for c_data in data.get("customers", []):
+            customer = Customer.from_dict(c_data)
+            self.customers[customer.customer_id] = customer
+
+        self.orders = []
+        for o_data in data.get("orders", []):
+            customer = self.customers.get(o_data["customer_id"])
+            if customer:
+                order = Order(o_data["order_id"], customer, o_data["items"], o_data["total_price"])
+                order.status = o_data["status"]
+                self.orders.append(order)
+
+        self.__order_counter = data.get("order_counter", 0)
+        logger.info(f"Данные загружены из {filename}")
+
 
 class DigitalProduct(Product):
     def __init__(self, name, price, quantity, product_id, file_size, download_link):
@@ -218,7 +329,18 @@ class DigitalProduct(Product):
         return True
 
     def __str__(self):
-        return f"{self._Product__name} ({self.product_id}): {self._Product__price} руб., в наличии: {self._Product__quantity}, формат: цифровой, размер: {self.file_size} МБ"
+        return f"{self.name} ({self.product_id}): {self.price} руб., в наличии: {self.quantity}, формат: цифровой, размер: {self.file_size} МБ"
+
+    def to_dict(self):
+        data = super().to_dict()
+        data["type"] = "DigitalProduct"
+        data["file_size"] = self.file_size
+        data["download_link"] = self.download_link
+        return data
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(data["name"], data["price"], data["quantity"], data["product_id"], data["file_size"], data["download_link"])
 
 
 class DiscountedProduct(Product):
@@ -249,7 +371,17 @@ class DiscountedProduct(Product):
         self._Product__price = value
 
     def __str__(self):
-        return f"{self._Product__name} ({self.product_id}): {self.price} руб. (скидка {self.__discount_percent}%), в наличии: {self._Product__quantity}"
+        return f"{self.name} ({self.product_id}): {self.price} руб. (скидка {self.__discount_percent}%), в наличии: {self.quantity}"
+
+    def to_dict(self):
+        data = super().to_dict()
+        data["type"] = "DiscountedProduct"
+        data["discount_percent"] = self.__discount_percent
+        return data
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(data["name"], data["price"], data["quantity"], data["product_id"], data["discount_percent"])
 
 
 class PaymentProcessor:
@@ -259,9 +391,11 @@ class PaymentProcessor:
 
 class CreditCardProcessor(PaymentProcessor):
     def process_payment(self, order, amount):
+        logger.info(f"Оплата заказа {order.order_id} кредитной картой: {amount} руб.")
         return f"Оплата заказа {order.order_id} на сумму {amount} прошла по кредитной карте."
 
 
 class PayPalProcessor(PaymentProcessor):
     def process_payment(self, order, amount):
+        logger.info(f"Оплата заказа {order.order_id} через PayPal: {amount} руб.")
         return f"Оплата заказа {order.order_id} на сумму {amount} прошла через PayPal."
